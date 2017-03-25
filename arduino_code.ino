@@ -1,25 +1,25 @@
 #include "protocol.h"
 
 //constants
-#define LEFT_CONST 320
-#define RIGHT_CONST 390
 #define NET_DELAY 400
 #define NET_WAITING 3
 #define MIN_FORCE 80
+#define DEFAULT_NET 350
 #define TOUCH_DELAY 20
-#define FSR_NUM 4
+#define FSR_NUM 6
 #define KEEP_ALIVE_TIME 4000
 #define SAMPLINGS 100
 #define ANALOG_MAX 1023
 #define INVALID_FORCE ANALOG_MAX/2
-#define MIN_FORCE_ADDITION 20
+#define MIN_FORCE_ADDITION 80
+#define ACC_ADDITION 40
 
 //global variables
-unsigned short netDetect = 0;
-unsigned long startNetDetect = 0;
-bool conn = false, calibrated = false;
+unsigned short netDetect = 0, netStable = 0;
 unsigned short minForce[] = {0, 0, 0, 0, 0, 0};
+unsigned long startNetDetect = 0;
 unsigned long lastSent, startDetect[] = {0, 0, 0, 0, 0, 0};
+bool conn = false, calibrated = false;
 bool detected[] = {false, false, false, false, false, false};
 
 //function declarations
@@ -36,10 +36,12 @@ void setup()
   Serial1.begin(9600);
   pinMode(19, INPUT);  
   digitalWrite(19, HIGH);
+  pinMode(2, OUTPUT);
 
-  if (!calibrate) //try to calibrate the sensors
+  if (!calibrate()) //try to calibrate the sensors
   {
-    //if the calibration failed, use default minimum force for each sensor
+    //if the calibration failed, use default values for each sensor
+    netStable = DEFAULT_NET;
     for (unsigned short i = 0; i < FSR_NUM; i++)
     {
       minForce[i] = MIN_FORCE;
@@ -91,8 +93,16 @@ void loop()
 //sends connection ack message and returns true when connection is established
 bool establishConn()
 {
+  
   unsigned short received;
-  Serial.print("Waiting for connection...");
+
+  //restart bluetooth
+  digitalWrite(2, LOW);
+  delay(20);
+  digitalWrite(2, HIGH);
+  
+  Serial.println("Waiting for connection...");
+  
   //wait for receiving a connection request
   do
   {
@@ -131,17 +141,22 @@ bool establishConn()
 //returns true if calibration was successful, or false if an error occured
 bool calibrate()
 {
+  Serial.print("Calibrating...");
   for (unsigned short i = 0; i < SAMPLINGS; i++) {
-    for (unsigned short i = 0; i < FSR_NUM; i++) {
-      unsigned short samplingValue;
-      if ((samplingValue = analogRead(i)) > minForce[i] - MIN_FORCE_ADDITION) {
+    netStable += analogRead(A6);
+    for (unsigned short j = 0; j < FSR_NUM; j++) {
+      int samplingValue;
+      if ((samplingValue = analogRead(j)) > (int)minForce[j] - MIN_FORCE_ADDITION) {
         if (samplingValue >= INVALID_FORCE) {
           return false;
         }
-        minForce[i] = samplingValue + MIN_FORCE_ADDITION;
+        minForce[j] = samplingValue + MIN_FORCE_ADDITION;
       }
     }
   }
+  netStable /= SAMPLINGS;
+  Serial.print(netStable);
+  Serial.println(" Done");
   return true;
 }
 
@@ -217,27 +232,34 @@ int checkLineHit()
 int checkNetHit()
 {
   unsigned int analogIn = analogRead(A8);
-
-  if (analogIn < LEFT_CONST) { //if sensing acceleration from the left
+  if (analogIn < netStable - ACC_ADDITION) { //if sensing acceleration from the left
     if (netDetect == 0) { //if it is the beginning of an oscillation, wait to see if the amplitude changes direction
       netDetect = NET_LEFT;
+      //Serial.print("Started left oscillation: ");
+      //Serial.println(analogIn);
       startNetDetect = millis();
     }
     else if (netDetect == NET_RIGHT) { //if the amplitude changed direction within the time limit, it means that the net was hit
       netDetect = NET_WAITING; //wait a while until the oscilation stops
       startNetDetect = millis();
+      //Serial.print("Finished right oscillation: ");
+      //Serial.println(analogIn);
       return NET_TOUCH + NET_RIGHT;
     }
   }
   
-  else if (analogIn > RIGHT_CONST) { //if sensing acceleration from the right
+  else if (analogIn > netStable + ACC_ADDITION) { //if sensing acceleration from the right
     if (netDetect == 0) { //if it is the beginning of an oscillation, wait to see if the amplitude changes direction
       netDetect = NET_RIGHT;
+      //Serial.print("Started right oscillation: ");
+      //Serial.println(analogIn);
       startNetDetect = millis();
     }
     else if (netDetect == NET_LEFT) { //if the amplitude changed direction within the time limit, it means that the net was hit
       netDetect = NET_WAITING; //wait a while until the oscilation stops
       startNetDetect = millis();
+      //Serial.print("Finished left oscillation: ");
+      //Serial.println(analogIn);
       return NET_TOUCH + NET_LEFT;
     }
   }
